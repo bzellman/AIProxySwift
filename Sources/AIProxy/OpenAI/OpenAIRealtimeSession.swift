@@ -107,8 +107,6 @@ open class OpenAIRealtimeSession {
         }
     }
 
-    // TODO: Add the remaining events from this list to the switch statement below:
-    //       https://platform.openai.com/docs/api-reference/realtime-server-events
     private func didReceiveWebSocketData(_ data: Data) {
         guard !self.isTearingDown else {
             // The caller already initiated disconnect,
@@ -127,24 +125,112 @@ open class OpenAIRealtimeSession {
         switch messageType {
         case "error":
             let errorBody = String(describing: json["error"] as? [String: Any])
-            logIf(.error)?.error("Received error from OpenAI websocket: \(errorBody)")
             self.continuation?.yield(.error(errorBody))
+            
+        // Session events
         case "session.created":
             self.continuation?.yield(.sessionCreated)
         case "session.updated":
             self.continuation?.yield(.sessionUpdated)
+            
+        // Response events    
+        case "response.created":
+            self.continuation?.yield(.responseCreated)
+        case "response.text.delta":
+            if let textDelta = json["delta"] as? String {
+                self.continuation?.yield(.responseTextDelta(textDelta))
+            }
+        case "response.text.done":
+            self.continuation?.yield(.responseTextDone)
+        case "response.audio_transcript.done":
+            if let transcriptString = json["transcript"] as? String {
+                self.continuation?.yield(.responseAudio_transcriptDone(transcriptString))
+            }
+        case "response.audio_transcript.delta":
+            if let textDelta = json["delta"] as? String {
+                self.continuation?.yield(.responseAudio_transcriptDelta(textDelta))
+            }
+        
         case "response.audio.delta":
             if let base64Audio = json["delta"] as? String {
                 self.continuation?.yield(.responseAudioDelta(base64Audio))
             }
-        case "response.created":
-            self.continuation?.yield(.responseCreated)
+        case "response.audio.done":
+            self.continuation?.yield(.responseAudioDone)
+        // case "response.audio_transcript.done":
+        //     self.continuation?.yield(.responseAudioDone)
+        case "response.function_call":
+            if let functionCall = json["function_call"] as? [String: Any] {
+                let name = functionCall["name"] as? String
+                let args = functionCall["arguments"] as? String
+                self.continuation?.yield(.responseFunctionCall(OpenAIFunctionCall(name: name, arguments: args)))
+            }
+        case "response.tool_calls":
+            if let toolCalls = json["tool_calls"] as? [[String: Any]] {
+                let parsedCalls = toolCalls.map { dict -> OpenAIToolCall in
+                    let id = dict["id"] as? String
+                    let type = dict["type"] as? String
+                    let function = (dict["function"] as? [String: Any]).map { f -> OpenAIFunctionCall in
+                        OpenAIFunctionCall(
+                            name: f["name"] as? String,
+                            arguments: f["arguments"] as? String
+                        )
+                    }
+                    return OpenAIToolCall(id: id, type: type, function: function)
+                }
+                self.continuation?.yield(.responseToolCalls(parsedCalls))
+            }
+            
+        // Input events    
         case "input_audio_buffer.speech_started":
             self.continuation?.yield(.inputAudioBufferSpeechStarted)
+        case "input_audio_buffer.delta":
+            if let delta = json["delta"] as? String {
+                self.continuation?.yield(.inputAudioBufferDelta(delta))
+            }
+        case "input_audio_buffer.done":
+            self.continuation?.yield(.inputAudioBufferDone)
+        case "input_text.delta":
+            if let delta = json["delta"] as? String {
+                self.continuation?.yield(.inputTextDelta(delta))
+            }
+        case "input_text.done":
+            self.continuation?.yield(.inputTextDone)
+            
+        // Conversation events    
+        case "conversation.created":
+            self.continuation?.yield(.conversationCreated)
+        case "conversation.updated":
+            self.continuation?.yield(.conversationUpdated)
+        case "conversation.done":
+            self.continuation?.yield(.conversationDone)
+        case "conversation.item.created":
+            self.continuation?.yield(.conversationItemCreated)
+        case "conversation.item.updated":
+            self.continuation?.yield(.conversationItemUpdated)
+        case "conversation.item.input":
+            self.continuation?.yield(.conversationItemInput)
+        case "conversation.item.response":
+            self.continuation?.yield(.conversationItemResponse)
+        case "conversation.item.input_audio_transcription.delta":
+            if let delta = json["delta"] as? String {
+                print(delta)
+                self.continuation?.yield(.conversationIitemInput_audio_transcriptionDelta(delta))
+            }
+            
+        // Turn events    
+        case "turn.created":
+            self.continuation?.yield(.turnCreated)
+        case "turn.updated":
+            self.continuation?.yield(.turnUpdated)
+        case "turn.done":
+            self.continuation?.yield(.turnDone)
+            
         default:
-            break
+            logIf(.debug)?.debug("Unhandled message type: \(messageType)")
         }
-
+        
+        // Continue receiving if not an error
         if messageType != "error" && !self.isTearingDown {
             self.receiveMessage()
         }
